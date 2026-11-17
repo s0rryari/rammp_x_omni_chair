@@ -3,6 +3,7 @@
 
 #include "driver/uart.h"
 
+#include "OmniChair_system.hpp"
 #include "basicmicro.hpp"
 #include "logger.hpp"
 
@@ -21,8 +22,8 @@ static constexpr int uart2_rx_pin = 4; // <- MCP S2
 static constexpr int uart_baud = 115200;
 
 extern "C" void app_main(void) {
-  espp::Logger logger({.tag = "Basicmicro Example", .level = espp::Logger::Verbosity::INFO});
-  logger.info("Starting basicmicro example");
+  espp::Logger logger({.tag = "OmniChair Main", .level = espp::Logger::Verbosity::INFO});
+  logger.info("Starting OmniChair System");
 
   //! [basicmicro example]
 
@@ -101,6 +102,14 @@ extern "C" void app_main(void) {
     logger.error("Is the controller connected, powered, and in packet serial mode?");
   }
 
+  // Joystick test: brings up Ethernet + RTPS and blocks until the joystick's cable is up.
+  static OmniChairSystem chair; // static: keeps running after app_main returns
+  if (!chair.start()) {
+    logger.error("OmniChair failed to start (see the OmniChair log above)");
+    return;
+  }
+  logger.info("OmniChair running: move the stick, you should see Joystick x=... lines");
+
   // TODO: Add these diagnostics back in for all mcps
   //  float volts{0};
   //  if (mcp.read_main_battery_voltage(volts, ec))
@@ -111,18 +120,18 @@ extern "C" void app_main(void) {
   //   logger.info("Status: 0x{:08X}{}", status, status == 0 ? " (normal)" : "");
 
   // TEST
-  using Axis = espp::Basicmicro::Axis;
-  static constexpr int16_t duty = 6553; // of 32767
+  // using Axis = espp::Basicmicro::Axis;
+  // static constexpr int16_t duty = 6553; // of 32767
 
-  if (!mcp1.drive_duty(Axis::M1, duty, ec))
-    logger.error("MCP1 drive_duty failed: {}", ec.message());
-  if (!mcp2.drive_duty(Axis::M1, duty, ec))
-    logger.error("MCP2 drive_duty failed: {}", ec.message());
+  // if (!mcp1.drive_duty(Axis::M1, duty, ec))
+  //   logger.error("MCP1 drive_duty failed: {}", ec.message());
+  // if (!mcp2.drive_duty(Axis::M1, duty, ec))
+  //   logger.error("MCP2 drive_duty failed: {}", ec.message());
 
-  std::this_thread::sleep_for(3s);
+  // std::this_thread::sleep_for(3s);
 
-  if (!mcp1.drive_duty(Axis::M1, 0, ec))
-    logger.error("MCP1 stop failed: {}", ec.message());
-  if (!mcp2.drive_duty(Axis::M1, 0, ec))
-    logger.error("MCP2 stop failed: {}", ec.message());
+  // if (!mcp1.drive_duty(Axis::M1, 0, ec))
+  //   logger.error("MCP1 stop failed: {}", ec.message());
+  // if (!mcp2.drive_duty(Axis::M1, 0, ec))
+  //   logger.error("MCP2 stop failed: {}", ec.message());
 }
