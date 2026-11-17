@@ -101,21 +101,18 @@ extern "C" void app_main(void) {
     logger.error("Is the controller connected, powered, and in packet serial mode?");
   }
 
-  // float volts{0};
-  // if (mcp.read_main_battery_voltage(volts, ec))
-  //   logger.info("Main battery: {:.1f} V", volts);
+  // TODO: Add these diagnostics back in for all mcps
+  //  float volts{0};
+  //  if (mcp.read_main_battery_voltage(volts, ec))
+  //    logger.info("Main battery: {:.1f} V", volts);
 
   // uint32_t status{0};
   // if (mcp.read_status(status, ec))
   //   logger.info("Status: 0x{:08X}{}", status, status == 0 ? " (normal)" : "");
 
-  // // gentle speed ramp on M1 (up to ~12.5% duty) with encoder readback, then
-  // // back down to a stop. Duty-cycle drive works without a tuned velocity PID;
-  // // if your encoders + PID are configured, try drive_speed(Axis::M1, ...)
-  // // instead. The channel is selected with the shared espp::MotorAxis enum.
+  // TEST
   using Axis = espp::Basicmicro::Axis;
   static constexpr int16_t duty = 6553; // of 32767
-  // command to drive duty: !mcp.drive_duty(Axis::M1, duty, ec)
 
   if (!mcp1.drive_duty(Axis::M1, duty, ec))
     logger.error("MCP1 drive_duty failed: {}", ec.message());
