@@ -48,6 +48,14 @@ private:
   static constexpr const char *kIpAddress = "192.168.4.1";
   static constexpr std::chrono::milliseconds kJoystickTimeout{200};
 
+  // wheel kinematics
+  //  wheel angle convention used in the kinematics formula
+  static constexpr float alpha1 = 0;
+  static constexpr float alpha2 = 2 * PI / 3;
+  static constexpr float alpha3 = 4 * PI / 3;
+  // effective wheel-to-center radius used in the omega term
+  static constexpr float R = 0.35;
+
   // Wheel targets, -1..+1. Only the control task touches these, so no mutex.
   float target1_{0.0f};
   float target2_{0.0f};

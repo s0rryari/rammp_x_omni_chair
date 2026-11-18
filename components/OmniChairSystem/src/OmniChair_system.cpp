@@ -99,6 +99,9 @@ void OmniChairSystem::update_motors() {
   using Axis = espp::Basicmicro::Axis;
   std::error_code ec;
   // wheel 1 = MCP1 M1, wheel 2 = MCP1 M2 (one packet for both), wheel 3 = MCP2 M1
+  // wheel 1 = front
+  // wheel 2 = rear left
+  // wheel 3 = rear right
   if (!mcp1_->drive_both_duty(to_duty(target1_), to_duty(target2_), ec))
     logger_.error("MCP1 drive failed: {}", ec.message());
   if (!mcp2_->drive_duty(Axis::M1, to_duty(target3_), ec))
@@ -181,6 +184,12 @@ bool OmniChairSystem::control_loop(std::mutex &m, std::condition_variable &cv) {
 void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
   logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
                sample.twist, static_cast<uint32_t>(sample.buttons));
+
+  // wheel kinematics
+  target1 = -1 * sample.x * cos(alpha1) + sample.y * sin(alpha1) - R * sample.twist;
+  target2 = -1 * sample.x * cos(alpha2) + sample.y * sin(alpha2) - R * sample.twist;
+  target3 = -1 * sample.x * cos(alpha3) + sample.y * sin(alpha3) - R * sample.twist;
+
   // TODO: omni kinematics (x, y, twist) -> three wheel targets
   set_targets(0.0f, 0.0f, 0.0f);
   // One-wheel bench test, wheels off the ground: set_targets(sample.y, 0.0f, 0.0f);
