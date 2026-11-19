@@ -1,6 +1,7 @@
 #include "OmniChair_system.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <thread>
 
@@ -102,9 +103,9 @@ void OmniChairSystem::update_motors() {
   // wheel 1 = front
   // wheel 2 = rear left
   // wheel 3 = rear right
-  if (!mcp1_->drive_both_duty(to_duty(target1_), to_duty(target2_), ec))
+  if (!mcp1_->drive_both_duty(to_duty(-target1_), to_duty(target2_), ec))
     logger_.error("MCP1 drive failed: {}", ec.message());
-  if (!mcp2_->drive_duty(Axis::M1, to_duty(target3_), ec))
+  if (!mcp2_->drive_duty(Axis::M1, to_duty(-target3_), ec))
     logger_.error("MCP2 drive failed: {}", ec.message());
 }
 
@@ -185,12 +186,17 @@ void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
   logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
                sample.twist, static_cast<uint32_t>(sample.buttons));
 
-  // wheel kinematics
-  target1 = -1 * sample.x * cos(alpha1) + sample.y * sin(alpha1) - R * sample.twist;
-  target2 = -1 * sample.x * cos(alpha2) + sample.y * sin(alpha2) - R * sample.twist;
-  target3 = -1 * sample.x * cos(alpha3) + sample.y * sin(alpha3) - R * sample.twist;
+  // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
+  const float target1 =
+      -sample.x * std::cos(alpha1) + sample.y * std::sin(alpha1) - R * sample.twist;
+  const float target2 =
+      -sample.x * std::cos(alpha2) + sample.y * std::sin(alpha2) - R * sample.twist;
+  const float target3 =
+      -sample.x * std::cos(alpha3) + sample.y * std::sin(alpha3) - R * sample.twist;
 
-  // TODO: omni kinematics (x, y, twist) -> three wheel targets
-  set_targets(0.0f, 0.0f, 0.0f);
-  // One-wheel bench test, wheels off the ground: set_targets(sample.y, 0.0f, 0.0f);
+  // Scale all three together so none exceeds 1: clamping each on its own would change the
+  // direction the chair moves.
+  const float biggest =
+      std::max({std::fabs(target1), std::fabs(target2), std::fabs(target3), 1.0f});
+  set_targets(target1 / biggest, target2 / biggest, target3 / biggest);
 }

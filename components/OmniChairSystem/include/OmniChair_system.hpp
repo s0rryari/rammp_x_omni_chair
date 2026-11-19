@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <numbers>
 
 #include "base_component.hpp"
 #include "basicmicro.hpp"
@@ -43,18 +44,17 @@ private:
   static constexpr int kMcp2TxPin = 5;
   static constexpr int kMcp2RxPin = 4;
   /// Share of full power a target of 1.0 reaches. Start low; raise once it drives safely.
-  static constexpr float kMaxDuty = 0.2f;
+  static constexpr float kMaxDuty = 0.4f;
 
   static constexpr const char *kIpAddress = "192.168.4.1";
   static constexpr std::chrono::milliseconds kJoystickTimeout{200};
 
   // wheel kinematics
   //  wheel angle convention used in the kinematics formula
-  static constexpr float alpha1 = 0;
-  static constexpr float alpha2 = 2 * PI / 3;
-  static constexpr float alpha3 = 4 * PI / 3;
-  // effective wheel-to-center radius used in the omega term
-  static constexpr float R = 0.35;
+  static constexpr float alpha1 = 0.0f;                                    // front
+  static constexpr float alpha2 = 4.0f * std::numbers::pi_v<float> / 3.0f; // rear left
+  static constexpr float alpha3 = 2.0f * std::numbers::pi_v<float> / 3.0f; // rear right
+  static constexpr float R = 1.0f;                                         // og was .35
 
   // Wheel targets, -1..+1. Only the control task touches these, so no mutex.
   float target1_{0.0f};
