@@ -1,6 +1,9 @@
 {
   "Lua.workspace.preloadFileSize": 2000,
-  "Lua.workspace.ignoreDir": [],
+  "Lua.workspace.ignoreDir": [
+    "*.tsp",
+    "*.tspa"
+  ],
   "Lua.diagnostics.libraryFiles": "Disable",
   "Lua.runtime.version": "Lua 5.1",
   "Lua.runtime.builtin": {
@@ -26,8 +29,8 @@
     "utf8": "disable"
   },
   "Lua.workspace.library": [
-    "c:\\Users\\arian\\.vscode\\extensions\\tektronix.tsp-toolkit-1.5.2-win32-x64\\node_modules\\@tektronix\\keithley_instrument_libraries\\keithley_instrument_libraries\\tsp-lua-5.0",
-    "c:\\Users\\arian\\.vscode\\extensions\\tektronix.tsp-toolkit-1.5.2-win32-x64\\node_modules\\@tektronix\\keithley_instrument_libraries\\keithley_instrument_libraries\\nodes_definitions"
+    "c:\\Users\\arian\\.vscode\\extensions\\tektronix.tsp-toolkit-1.6.0-win32-x64\\node_modules\\@tektronix\\keithley_instrument_libraries\\keithley_instrument_libraries\\tsp-lua-5.0",
+    "c:\\Users\\arian\\.vscode\\extensions\\tektronix.tsp-toolkit-1.6.0-win32-x64\\node_modules\\@tektronix\\keithley_instrument_libraries\\keithley_instrument_libraries\\nodes_definitions"
   ],
   "idf.currentSetup": "C:\\esp\\v6.0.2\\esp-idf",
   "idf.customExtraVars": {},
@@ -36,5 +39,6 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\arian\\Documents\\RAMMP\\repos\\rammp_x_omni_chair\\build"
-  ]
+  ],
+  "Lua.diagnostics.ignoredFiles": "Opened"
 }

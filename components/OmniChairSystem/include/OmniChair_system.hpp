@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -48,6 +49,8 @@ private:
 
   static constexpr const char *kIpAddress = "192.168.4.1";
   static constexpr std::chrono::milliseconds kJoystickTimeout{200};
+  static constexpr std::chrono::milliseconds kJoystickLostTimeout{1000};
+  enum class State : uint8_t { IDLE, ENABLED };
 
   // wheel kinematics
   //  wheel angle convention used in the kinematics formula
@@ -64,11 +67,16 @@ private:
   std::mutex joystick_mutex_;
   rammp::XYTwist latest_joystick_{};
   std::chrono::steady_clock::time_point last_joystick_time_{};
+  std::atomic<State> state_{State::IDLE};
+  std::atomic<rammp::DriveProfile> profile_{rammp::DriveProfile::NORMAL};
+  uint8_t status_seq_{0};
 
   // Destroyed bottom-up: the task first, then what it uses.
   std::unique_ptr<espp::Basicmicro> mcp1_;
   std::unique_ptr<espp::Basicmicro> mcp2_;
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_;
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_;
+  std::unique_ptr<espp::Publisher<rammp::MibStatus>> status_pub_;
+  std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_sub_;
   std::unique_ptr<espp::Task> control_task_;
 };
