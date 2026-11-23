@@ -4,6 +4,8 @@ CONFIG_IDF_TARGET="esp32p4"
 # CONFIG_IDF_TARGET="esp32s3"
 # CONFIG_IDF_TARGET="esp32c3"
 
+#CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+#CONFIG_ESP32P4_REV_MIN_100=y
 
 # TODO: uncomment if you want freertos to run at 1 khz instead of the default 100 hz
 # CONFIG_FREERTOS_HZ=1000

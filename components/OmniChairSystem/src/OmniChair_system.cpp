@@ -151,6 +151,36 @@ bool OmniChairSystem::init_pubsub() {
     logger_.error("Failed to create the joystick subscriber");
     return false;
   }
+
+  status_pub_ = std::make_unique<espp::Publisher<rammp::MibStatus>>(
+      *rtps_participant_,
+      espp::Publisher<rammp::MibStatus>::Config{.topic = rammp::kMibStatus.name,
+                                                .type_name = rammp::kMibStatus.type});
+  if (!status_pub_->is_valid()) {
+    logger_.error("Failed to create the status publisher");
+    return false;
+  }
+
+  drive_sub_ = std::make_unique<espp::Subscriber<rammp::DriveCommand>>(
+      *rtps_participant_,
+      espp::Subscriber<rammp::DriveCommand>::Config{
+          .topic = rammp::kDriveCommand.name,
+          .type_name = rammp::kDriveCommand.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::DriveCommand &c) {
+            if (c.request == rammp::DriveRequest::ENABLE) {
+              profile_ = rammp::DriveProfile::NORMAL; // for now, ignores all other drive modes and
+                                                      // defaults to normal
+              state_ = State::ENABLED;
+            } else if (c.request == rammp::DriveRequest::DISABLE) {
+              state_ = State::IDLE;
+            }
+          }});
+  if (!drive_sub_->is_valid()) {
+    logger_.error("Failed to create the drive command subscriber");
+    return false;
+  }
+
   return true;
 }
 
@@ -171,11 +201,34 @@ bool OmniChairSystem::control_loop(std::mutex &m, std::condition_variable &cv) {
     stamp = last_joystick_time_;
   }
 
-  if (std::chrono::steady_clock::now() - stamp > kJoystickTimeout)
+  const auto since_stick = std::chrono::steady_clock::now() - stamp;
+  if (since_stick > kJoystickLostTimeout) // e.g. 1s: joystick gone, require a new unlock
+    state_ = State::IDLE;
+
+  if (state_ != State::ENABLED || since_stick > kJoystickTimeout)
     stop_motors();
   else
     apply_stick(stick);
-  update_motors(); // every pass, so zeros really reach the RoboClaws
+
+  update_motors();
+
+  // Status: at once when the state changes (the HMI waits only ~750 ms for an
+  // answer), otherwise every 500 ms by the clock, not by loop count.
+  static State last_sent = State::IDLE;
+  static auto last_status = std::chrono::steady_clock::time_point{};
+  const State now_state = state_;
+  const auto now = std::chrono::steady_clock::now();
+  if (now_state != last_sent || now - last_status >= 500ms) {
+    last_sent = now_state;
+    last_status = now;
+    rammp::MibStatus s{};
+    s.system_state =
+        now_state == State::ENABLED ? rammp::MibSystemState::ENABLED : rammp::MibSystemState::IDLE;
+    s.active_profile = profile_;
+    s.seq = ++status_seq_;
+    if (!status_pub_->publish(s))
+      logger_.warn("Failed to publish MibStatus");
+  }
 
   std::unique_lock<std::mutex> lock(m);
   cv.wait_for(lock, 20ms);
@@ -183,8 +236,8 @@ bool OmniChairSystem::control_loop(std::mutex &m, std::condition_variable &cv) {
 }
 
 void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
-  logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
-               sample.twist, static_cast<uint32_t>(sample.buttons));
+  // logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
+  //              sample.twist, static_cast<uint32_t>(sample.buttons));
 
   // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
   const float target1 =
