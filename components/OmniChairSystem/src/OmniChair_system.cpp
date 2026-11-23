@@ -86,13 +86,10 @@ bool OmniChairSystem::init_mcps() {
   return true;
 }
 
-void OmniChairSystem::set_targets(float target1, float target2, float target3, float target4,
-                                  float target5) {
+void OmniChairSystem::set_targets(float target1, float target2, float target3) {
   target1_ = std::clamp(target1, -1.0f, 1.0f);
   target2_ = std::clamp(target2, -1.0f, 1.0f);
   target3_ = std::clamp(target3, -1.0f, 1.0f);
-  target4_ = std::clamp(target4, -1.0f, 1.0f);
-  target5_ = std::clamp(target5, -1.0f, 1.0f);
 }
 
 int16_t OmniChairSystem::to_duty(float target) const {
@@ -100,7 +97,7 @@ int16_t OmniChairSystem::to_duty(float target) const {
 }
 
 void OmniChairSystem::update_motors() {
-  using Axis = espp::Basicmicro::Axis;
+  // using Axis = espp::Basicmicro::Axis;
   std::error_code ec;
   // wheel 1 = MCP1 M1, wheel 2 = MCP1 M2 (one packet for both), wheel 3 = MCP2 M1
   // wheel 1 = front
@@ -109,18 +106,12 @@ void OmniChairSystem::update_motors() {
   // drving commands
   if (!mcp1_->drive_both_duty(to_duty(-target1_), to_duty(target2_), ec))
     logger_.error("MCP1 drive failed: {}", ec.message());
-  if (!mcp2_->drive_duty(Axis::M1, to_duty(-target3_), ec))
+  if (!mcp2_->drive_both_duty(to_duty(-target3_), to_duty(target4_), ec))
     logger_.error("MCP2 drive failed: {}", ec.message());
-
-  // seat commands
-  if (SeatCommand.type == 1)
-    if (!mcp2_->drive_duty(Axis::M2, to_duty(target4), ec))
-      logger_.error("MCP2 drive failed: {}", ec.message());
-  elif (SeatCommand.type == 2) break;
-  // TODO: add another mcp for footrest
+  // TODO MCP3: send to_duty(target5_) for the footrest
 }
 
-void OmniChairSystem::stop_motors() { set_targets(0.0f, 0.0f, 0.0f, 0.0f, 0.0f); }
+void OmniChairSystem::stop_motors() { set_targets(0.0f, 0.0f, 0.0f); }
 
 bool OmniChairSystem::init_ethernet() {
   espp::Esp32P4Eth::EthernetConfig config{};
@@ -169,129 +160,141 @@ bool OmniChairSystem::init_pubsub() {
                                                .type_name = rammp::kJoystickXYTwist.type,
                                                .reliability = Reliability::BEST_EFFORT,
                                                .on_message = [this](const rammp::XYTwist &s) {
-                                                 handle_joystick_message(sample);
-                                                 SeatCommand.enabled = true;
-                                                 SeatCommand.type = 1;
+                                                 std::lock_guard<std::mutex> lock(joystick_mutex_);
+                                                 latest_seat_ = s;
+                                                 last_seat_time_ = std::chrono::steady_clock::now();
                                                }});
   if (!seat_subscriber_->is_valid()) {
     logger_.error("Failed to create the seat subscriber");
     return false;
   }
 
-  seat_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
+  swivel_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
       *rtps_participant_,
       espp::Subscriber<rammp::XYTwist>::Config{.topic = "rammp/joystick/swivel/xy_twist",
                                                .type_name = rammp::kJoystickXYTwist.type,
                                                .reliability = Reliability::BEST_EFFORT,
                                                .on_message = [this](const rammp::XYTwist &s) {
-                                                 handle_joystick_message(sample);
-                                                 SeatCommand.enabled = true;
-                                                 SeatCommand.type = 2;
+                                                 std::lock_guard<std::mutex> lock(joystick_mutex_);
+                                                 latest_footrest_ = s;
+                                                 last_footrest_time_ =
+                                                     std::chrono::steady_clock::now();
                                                }});
-  if (!seat_subscriber_->is_valid()) {
+  if (!swivel_subscriber_->is_valid()) {
     logger_.error("Failed to create the swivel subscriber");
-    status_pub_ = std::make_unique<espp::Publisher<rammp::MibStatus>>(
-        *rtps_participant_,
-        espp::Publisher<rammp::MibStatus>::Config{.topic = rammp::kMibStatus.name,
-                                                  .type_name = rammp::kMibStatus.type});
-    if (!status_pub_->is_valid()) {
-      logger_.error("Failed to create the status publisher");
-      return false;
-    }
-
-    drive_sub_ = std::make_unique<espp::Subscriber<rammp::DriveCommand>>(
-        *rtps_participant_,
-        espp::Subscriber<rammp::DriveCommand>::Config{
-            .topic = rammp::kDriveCommand.name,
-            .type_name = rammp::kDriveCommand.type,
-            .reliability = Reliability::BEST_EFFORT,
-            .on_message = [this](const rammp::DriveCommand &c) {
-              if (c.request == rammp::DriveRequest::ENABLE) {
-                profile_ = rammp::DriveProfile::NORMAL; // for now, ignores all other drive modes
-                                                        // and defaults to normal
-                state_ = State::ENABLED;
-              } else if (c.request == rammp::DriveRequest::DISABLE) {
-                state_ = State::IDLE;
-              }
-            }});
-    if (!drive_sub_->is_valid()) {
-      logger_.error("Failed to create the drive command subscriber");
-      return false;
-    }
-
-    return true;
-  }
-
-  // RTPS receive task: just record the sample, never block here.
-  void OmniChairSystem::handle_joystick_message(const rammp::XYTwist &sample) {
-    std::lock_guard<std::mutex> lock(joystick_mutex_);
-    latest_joystick_ = sample;
-    last_joystick_time_ = std::chrono::steady_clock::now();
-  }
-
-  // Control task, ~50 Hz: drive on the latest sample, or stop if the joystick went quiet.
-  bool OmniChairSystem::control_loop(std::mutex & m, std::condition_variable & cv) {
-    rammp::XYTwist stick{};
-    std::chrono::steady_clock::time_point stamp{};
-    {
-      std::lock_guard<std::mutex> lock(joystick_mutex_);
-      stick = latest_joystick_;
-      stamp = last_joystick_time_;
-    }
-
-    const auto since_stick = std::chrono::steady_clock::now() - stamp;
-    if (since_stick > kJoystickLostTimeout) // e.g. 1s: joystick gone, require a new unlock
-      state_ = State::IDLE;
-
-    if (state_ != State::ENABLED || since_stick > kJoystickTimeout)
-      stop_motors();
-    if (SeatCommand.enabled)
-      apply_seat_command(stick);
-    else
-      apply_stick(stick);
-
-    update_motors();
-
-    // Status: at once when the state changes (the HMI waits only ~750 ms for an
-    // answer), otherwise every 500 ms by the clock, not by loop count.
-    static State last_sent = State::IDLE;
-    static auto last_status = std::chrono::steady_clock::time_point{};
-    const State now_state = state_;
-    const auto now = std::chrono::steady_clock::now();
-    if (now_state != last_sent || now - last_status >= 500ms) {
-      last_sent = now_state;
-      last_status = now;
-      rammp::MibStatus s{};
-      s.system_state = now_state == State::ENABLED ? rammp::MibSystemState::ENABLED
-                                                   : rammp::MibSystemState::IDLE;
-      s.active_profile = profile_;
-      s.seq = ++status_seq_;
-      if (!status_pub_->publish(s))
-        logger_.warn("Failed to publish MibStatus");
-    }
-
-    std::unique_lock<std::mutex> lock(m);
-    cv.wait_for(lock, 20ms);
     return false;
   }
 
-  void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
-    // logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
-    //              sample.twist, static_cast<uint32_t>(sample.buttons));
-
-    // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
-    const float target1 =
-        -sample.x * std::cos(alpha1) + sample.y * std::sin(alpha1) - R * sample.twist;
-    const float target2 =
-        -sample.x * std::cos(alpha2) + sample.y * std::sin(alpha2) - R * sample.twist;
-    const float target3 =
-        -sample.x * std::cos(alpha3) + sample.y * std::sin(alpha3) - R * sample.twist;
-
-    // Scale all three together so none exceeds 1: clamping each on its own would change the
-    // direction the chair moves.
-    const float biggest =
-        std::max({std::fabs(target1), std::fabs(target2), std::fabs(target3), 1.0f});
-    set_targets(target1 / biggest, target2 / biggest, target3 / biggest);
+  status_pub_ = std::make_unique<espp::Publisher<rammp::MibStatus>>(
+      *rtps_participant_,
+      espp::Publisher<rammp::MibStatus>::Config{.topic = rammp::kMibStatus.name,
+                                                .type_name = rammp::kMibStatus.type});
+  if (!status_pub_->is_valid()) {
+    logger_.error("Failed to create the status publisher");
+    return false;
   }
 
-  void OmniChairSystem::apply_seat_command(const rammp::XYTwist &sample) {}
+  drive_sub_ = std::make_unique<espp::Subscriber<rammp::DriveCommand>>(
+      *rtps_participant_,
+      espp::Subscriber<rammp::DriveCommand>::Config{
+          .topic = rammp::kDriveCommand.name,
+          .type_name = rammp::kDriveCommand.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::DriveCommand &c) {
+            if (c.request == rammp::DriveRequest::ENABLE) {
+              profile_ = rammp::DriveProfile::NORMAL; // for now, ignores all other drive modes
+                                                      // and defaults to normal
+              state_ = State::ENABLED;
+            } else if (c.request == rammp::DriveRequest::DISABLE) {
+              state_ = State::IDLE;
+            }
+          }});
+  if (!drive_sub_->is_valid()) {
+    logger_.error("Failed to create the drive command subscriber");
+    return false;
+  }
+
+  return true;
+}
+
+// RTPS receive task: just record the sample, never block here.
+void OmniChairSystem::handle_joystick_message(const rammp::XYTwist &sample) {
+  std::lock_guard<std::mutex> lock(joystick_mutex_);
+  latest_joystick_ = sample;
+  last_joystick_time_ = std::chrono::steady_clock::now();
+}
+
+// Control task, ~50 Hz: drive on the latest sample, or stop if the joystick went quiet.
+bool OmniChairSystem::control_loop(std::mutex &m, std::condition_variable &cv) {
+  rammp::XYTwist stick{}, seat{}, foot{};
+  std::chrono::steady_clock::time_point stamp{}, seat_stamp{}, foot_stamp{};
+  {
+    std::lock_guard<std::mutex> lock(joystick_mutex_);
+    stick = latest_joystick_;
+    stamp = last_joystick_time_;
+    seat = latest_seat_;
+    seat_stamp = last_seat_time_;
+    foot = latest_footrest_;
+    foot_stamp = last_footrest_time_;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto since_stick = now - stamp;
+  if (since_stick > kJoystickLostTimeout)
+    state_ = State::IDLE;
+  const bool enabled = state_ == State::ENABLED;
+
+  // Wheels: only while ENABLED and the drive stick is fresh
+  if (!enabled || since_stick > kJoystickTimeout)
+    stop_motors();
+  else
+    apply_stick(stick);
+
+  // Seat motors: only while IDLE and their own stream is fresh; 0 otherwise
+  target4_ =
+      (!enabled && now - seat_stamp < kJoystickTimeout) ? std::clamp(seat.y, -1.0f, 1.0f) : 0.0f;
+  target5_ =
+      (!enabled && now - foot_stamp < kJoystickTimeout) ? std::clamp(foot.y, -1.0f, 1.0f) : 0.0f;
+
+  update_motors();
+
+  // Status: at once when the state changes (the HMI waits only ~750 ms for an
+  // answer), otherwise every 500 ms by the clock, not by loop count.
+  static State last_sent = State::IDLE;
+  static auto last_status = std::chrono::steady_clock::time_point{};
+  const State now_state = state_;
+  if (now_state != last_sent || now - last_status >= 500ms) {
+    last_sent = now_state;
+    last_status = now;
+    rammp::MibStatus s{};
+    s.system_state =
+        now_state == State::ENABLED ? rammp::MibSystemState::ENABLED : rammp::MibSystemState::IDLE;
+    s.active_profile = profile_;
+    s.seq = ++status_seq_;
+    if (!status_pub_->publish(s))
+      logger_.warn("Failed to publish MibStatus");
+  }
+
+  std::unique_lock<std::mutex> lock(m);
+  cv.wait_for(lock, 20ms);
+  return false;
+}
+
+void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
+  // logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
+  //              sample.twist, static_cast<uint32_t>(sample.buttons));
+
+  // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
+  const float target1 =
+      -sample.x * std::cos(alpha1) + sample.y * std::sin(alpha1) - R * sample.twist;
+  const float target2 =
+      -sample.x * std::cos(alpha2) + sample.y * std::sin(alpha2) - R * sample.twist;
+  const float target3 =
+      -sample.x * std::cos(alpha3) + sample.y * std::sin(alpha3) - R * sample.twist;
+
+  // Scale all three together so none exceeds 1: clamping each on its own would change the
+  // direction the chair moves.
+  const float biggest =
+      std::max({std::fabs(target1), std::fabs(target2), std::fabs(target3), 1.0f});
+  set_targets(target1 / biggest, target2 / biggest, target3 / biggest);
+}

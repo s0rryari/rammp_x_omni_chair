@@ -25,7 +25,7 @@ public:
 private:
   bool init_mcps();
   std::unique_ptr<espp::Basicmicro> make_mcp(uart_port_t port, int tx_pin, int rx_pin);
-  void set_targets(float target1, float target2, float target3, float target4, float target5);
+  void set_targets(float target1, float target2, float target3);
   void update_motors();
   int16_t to_duty(float target) const;
   bool init_ethernet();
@@ -34,15 +34,7 @@ private:
   void handle_joystick_message(const rammp::XYTwist &sample);
   bool control_loop(std::mutex &m, std::condition_variable &cv);
   void apply_stick(const rammp::XYTwist &sample);
-  void apply_seat_command(
-      const rammp::XYTwist &sample); // handles both seat and swivel commands from joystick but can
-                                     // command omni chair seat elevation and footrest seperately
   void stop_motors();
-
-  struct SeatCommand {
-    bool enabled = false;
-    int type = 0; // 0 =not enabled, 1 = seat elevation, 2 = footrest adjustment
-  }
 
   // RoboClaw wiring (S1 = controller RX <- our TX, S2 = controller TX -> our RX)
   static constexpr int kUartBaud = 115200;
@@ -77,6 +69,10 @@ private:
   std::mutex joystick_mutex_;
   rammp::XYTwist latest_joystick_{};
   std::chrono::steady_clock::time_point last_joystick_time_{};
+  rammp::XYTwist latest_seat_{};
+  rammp::XYTwist latest_footrest_{};
+  std::chrono::steady_clock::time_point last_seat_time_{};
+  std::chrono::steady_clock::time_point last_footrest_time_{};
   std::atomic<State> state_{State::IDLE};
   std::atomic<rammp::DriveProfile> profile_{rammp::DriveProfile::NORMAL};
   uint8_t status_seq_{0};
