@@ -86,10 +86,13 @@ bool OmniChairSystem::init_mcps() {
   return true;
 }
 
-void OmniChairSystem::set_targets(float target1, float target2, float target3) {
+void OmniChairSystem::set_targets(float target1, float target2, float target3, float target4,
+                                  float target5) {
   target1_ = std::clamp(target1, -1.0f, 1.0f);
   target2_ = std::clamp(target2, -1.0f, 1.0f);
   target3_ = std::clamp(target3, -1.0f, 1.0f);
+  target4_ = std::clamp(target4, -1.0f, 1.0f);
+  target5_ = std::clamp(target5, -1.0f, 1.0f);
 }
 
 int16_t OmniChairSystem::to_duty(float target) const {
@@ -103,13 +106,21 @@ void OmniChairSystem::update_motors() {
   // wheel 1 = front
   // wheel 2 = rear left
   // wheel 3 = rear right
+  // drving commands
   if (!mcp1_->drive_both_duty(to_duty(-target1_), to_duty(target2_), ec))
     logger_.error("MCP1 drive failed: {}", ec.message());
   if (!mcp2_->drive_duty(Axis::M1, to_duty(-target3_), ec))
     logger_.error("MCP2 drive failed: {}", ec.message());
+
+  // seat commands
+  if (SeatCommand.type == 1)
+    if (!mcp2_->drive_duty(Axis::M2, to_duty(target4), ec))
+      logger_.error("MCP2 drive failed: {}", ec.message());
+  elif (SeatCommand.type == 2) break;
+  // TODO: add another mcp for footrest
 }
 
-void OmniChairSystem::stop_motors() { set_targets(0.0f, 0.0f, 0.0f); }
+void OmniChairSystem::stop_motors() { set_targets(0.0f, 0.0f, 0.0f, 0.0f, 0.0f); }
 
 bool OmniChairSystem::init_ethernet() {
   espp::Esp32P4Eth::EthernetConfig config{};
@@ -151,6 +162,37 @@ bool OmniChairSystem::init_pubsub() {
     logger_.error("Failed to create the joystick subscriber");
     return false;
   }
+
+  seat_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
+      *rtps_participant_,
+      espp::Subscriber<rammp::XYTwist>::Config{.topic = "rammp/joystick/seat/xy_twist",
+                                               .type_name = rammp::kJoystickXYTwist.type,
+                                               .reliability = Reliability::BEST_EFFORT,
+                                               .on_message = [this](const rammp::XYTwist &s) {
+                                                 handle_joystick_message(sample);
+                                                 SeatCommand.enabled = true;
+                                                 SeatCommand.type = 1;
+                                               }});
+  if (!seat_subscriber_->is_valid()) {
+    logger_.error("Failed to create the seat subscriber");
+    return false;
+  }
+
+  seat_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
+      *rtps_participant_,
+      espp::Subscriber<rammp::XYTwist>::Config{.topic = "rammp/joystick/swivel/xy_twist",
+                                               .type_name = rammp::kJoystickXYTwist.type,
+                                               .reliability = Reliability::BEST_EFFORT,
+                                               .on_message = [this](const rammp::XYTwist &s) {
+                                                 handle_joystick_message(sample);
+                                                 SeatCommand.enabled = true;
+                                                 SeatCommand.type = 2;
+                                               }});
+  if (!seat_subscriber_->is_valid()) {
+    logger_.error("Failed to create the swivel subscriber");
+    return false;
+  }
+
   return true;
 }
 
@@ -173,6 +215,8 @@ bool OmniChairSystem::control_loop(std::mutex &m, std::condition_variable &cv) {
 
   if (std::chrono::steady_clock::now() - stamp > kJoystickTimeout)
     stop_motors();
+  if (SeatCommand.enabled)
+    apply_seat_command(stick);
   else
     apply_stick(stick);
   update_motors(); // every pass, so zeros really reach the RoboClaws
@@ -200,3 +244,5 @@ void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
       std::max({std::fabs(target1), std::fabs(target2), std::fabs(target3), 1.0f});
   set_targets(target1 / biggest, target2 / biggest, target3 / biggest);
 }
+
+void OmniChairSystem::apply_seat_command(const rammp::XYTwist &sample) {}

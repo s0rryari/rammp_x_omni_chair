@@ -24,7 +24,7 @@ public:
 private:
   bool init_mcps();
   std::unique_ptr<espp::Basicmicro> make_mcp(uart_port_t port, int tx_pin, int rx_pin);
-  void set_targets(float target1, float target2, float target3);
+  void set_targets(float target1, float target2, float target3, float target4, float target5);
   void update_motors();
   int16_t to_duty(float target) const;
   bool init_ethernet();
@@ -33,7 +33,15 @@ private:
   void handle_joystick_message(const rammp::XYTwist &sample);
   bool control_loop(std::mutex &m, std::condition_variable &cv);
   void apply_stick(const rammp::XYTwist &sample);
+  void apply_seat_command(
+      const rammp::XYTwist &sample); // handles both seat and swivel commands from joystick but can
+                                     // command omni chair seat elevation and footrest seperately
   void stop_motors();
+
+  struct SeatCommand {
+    bool enabled = false;
+    int type = 0; // 0 =not enabled, 1 = seat elevation, 2 = footrest adjustment
+  }
 
   // RoboClaw wiring (S1 = controller RX <- our TX, S2 = controller TX -> our RX)
   static constexpr int kUartBaud = 115200;
@@ -60,6 +68,8 @@ private:
   float target1_{0.0f};
   float target2_{0.0f};
   float target3_{0.0f};
+  float target4_{0.0f}; // seat elevation
+  float target5_{0.0f}; // footrest elevation
 
   std::mutex joystick_mutex_;
   rammp::XYTwist latest_joystick_{};
@@ -70,5 +80,7 @@ private:
   std::unique_ptr<espp::Basicmicro> mcp2_;
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_;
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_;
+  std::unique_ptr<espp::Subscriber<rammp::XYTwist>> seat_subscriber_;
+  std::unique_ptr<espp::Subscriber<rammp::XYTwist>> swivel_subscriber_;
   std::unique_ptr<espp::Task> control_task_;
 };
