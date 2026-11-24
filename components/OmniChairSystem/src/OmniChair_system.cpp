@@ -109,7 +109,54 @@ void OmniChairSystem::update_motors() {
     logger_.error("MCP2 drive failed: {}", ec.message());
 }
 
-void OmniChairSystem::stop_motors() { set_targets(0.0f, 0.0f, 0.0f); }
+void OmniChairSystem::stop_motors() {
+  set_targets(0.0f, 0.0f, 0.0f);
+  vxfilter = vyfilter = omegafilter = 0.0;
+  pre_vxfilter = pre_vyfilter = pre_omegafilter = 0.0;
+  wheel1 = wheel2 = wheel3 = 0.0f;
+  prevWheel1 = prevWheel2 = prevWheel3 = 0.0f;
+}
+
+float OmniChairSystem::filter(float rawValue, float w, float prevValue) {
+  return w * rawValue + (1.0 - w) * prevValue;
+}
+
+float OmniChairSystem::selectFilter(float target, float previous) {
+  return (std::fabs(target) < std::fabs(previous)) ? Kfvel_decel : Kfvel_accel;
+}
+
+float OmniChairSystem::chooseComp(float pos, float neg, float value) {
+  return (value >= 0.0f) ? pos : neg;
+}
+
+float OmniChairSystem::limitAcceleration(float previous, float target, float accelLimit,
+                                         float decelLimit) {
+  float delta = target - previous;
+  bool decelerating = (std::fabs(target) < std::fabs(previous));
+  bool reversing = (previous * target < -0.001);
+  float limit;
+  if (reversing)
+    limit = max_reversal;
+  else if (decelerating)
+    limit = decelLimit;
+  else
+    limit = accelLimit;
+  if (delta > limit)
+    delta = limit;
+  if (delta < -limit)
+    delta = -limit;
+  return previous + delta;
+}
+
+float OmniChairSystem::applyDeadband(float w, float minDuty) {
+  if (minDuty < 0.001)
+    return w;
+  if (w > 0.001)
+    return minDuty + w * (1.0 - minDuty);
+  if (w < -0.001)
+    return -minDuty + w * (1.0 - minDuty);
+  return 0.0;
+}
 
 bool OmniChairSystem::init_ethernet() {
   espp::Esp32P4Eth::EthernetConfig config{};
@@ -239,17 +286,155 @@ void OmniChairSystem::apply_stick(const rammp::XYTwist &sample) {
   // logger_.info("Joystick x={:.2f} y={:.2f} twist={:.2f} buttons={}", sample.x, sample.y,
   //              sample.twist, static_cast<uint32_t>(sample.buttons));
 
-  // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
-  const float target1 =
-      -sample.x * std::cos(alpha1) + sample.y * std::sin(alpha1) - R * sample.twist;
-  const float target2 =
-      -sample.x * std::cos(alpha2) + sample.y * std::sin(alpha2) - R * sample.twist;
-  const float target3 =
-      -sample.x * std::cos(alpha3) + sample.y * std::sin(alpha3) - R * sample.twist;
+  const float joyx = sample.x;
+  const float joyy = sample.y;
+  const float joyz = sample.twist;
 
-  // Scale all three together so none exceeds 1: clamping each on its own would change the
-  // direction the chair moves.
-  const float biggest =
-      std::max({std::fabs(target1), std::fabs(target2), std::fabs(target3), 1.0f});
-  set_targets(target1 / biggest, target2 / biggest, target3 / biggest);
+  // map joystick axes to chair velocities based on drive mode.
+  // currently bc GUI side not impl, by default in omni mode
+  float cmd_vx, cmd_vy, cmd_omega;
+  float mode_accel_omega, mode_decel_omega;
+
+  int mode = 1;
+  if (mode == 0) {
+    // wheelchair: Y=drive, X=turn, Z=strafe
+    cmd_vy = joyy * max_vy;
+    cmd_omega = joyx * max_turn;
+    cmd_vx = -joyz * max_vx_wc;
+    mode_accel_omega = max_accel * OMEGA_ACCEL_BOOST;
+    mode_decel_omega = max_decel * OMEGA_ACCEL_BOOST;
+  } else {
+    cmd_vx = joyx * max_vx_omni;
+    cmd_vy = joyy * max_vy;
+    cmd_omega = joyz * max_omega;
+
+    mode_accel_omega = max_accel * OMEGA_ACCEL_BOOST * 0.8;
+    mode_decel_omega = max_decel * OMEGA_ACCEL_BOOST * 0.8;
+  }
+
+  // velocity filtering
+  double kvx = selectFilter(cmd_vx, pre_vxfilter);
+  double kvy = selectFilter(cmd_vy, pre_vyfilter);
+  double kw = selectFilter(cmd_omega, pre_omegafilter);
+  vxfilter = filter(cmd_vx, kvx, pre_vxfilter);
+  vyfilter = filter(cmd_vy, kvy, pre_vyfilter);
+  omegafilter = filter(cmd_omega, kw, pre_omegafilter);
+
+  bool joy_neutral =
+      (std::fabs(joyx) < 0.05) && (std::fabs(joyy) < 0.05) &&
+      (std::fabs(joyz) < 0.05); // need to cross check these dead bands against joystick dead bands
+
+  float vx_decel = max_decel;
+  float vy_decel = max_decel;
+  float w_decel = mode_decel_omega;
+  if (joy_neutral) {
+    vx_decel = hard_decel;
+    vy_decel = hard_decel;
+    w_decel = hard_decel * (mode_decel_omega / max_decel);
+  }
+
+  // start accel boost
+  float cur_speed = std::sqrt(pre_vxfilter * pre_vxfilter + pre_vyfilter * pre_vyfilter);
+  float vx_accel = max_accel;
+  float vy_accel = max_accel;
+  if (cur_speed < START_ACCEL_RAMP_VEL) {
+    float blend_a = cur_speed / START_ACCEL_RAMP_VEL;
+    vx_accel = start_accel + blend_a * (max_accel - start_accel);
+    vy_accel = start_accel + blend_a * (max_accel - start_accel);
+  }
+
+  vxfilter = limitAcceleration(pre_vxfilter, vxfilter, vx_accel, vx_decel);
+  vyfilter = limitAcceleration(pre_vyfilter, vyfilter, vy_accel, vy_decel);
+  omegafilter = limitAcceleration(pre_omegafilter, omegafilter, mode_accel_omega, w_decel);
+
+  // combined accel/decel cap for linear motion
+  float dvx = vxfilter - pre_vxfilter;
+  float dvy = vyfilter - pre_vyfilter;
+  float accel_mag = std::sqrt(dvx * dvx + dvy * dvy);
+
+  float linear_delta_cap = joy_neutral ? hard_decel : max_decel;
+
+  if (accel_mag > linear_delta_cap) {
+    float accel_scale = linear_delta_cap / accel_mag;
+    vxfilter = pre_vxfilter + dvx * accel_scale;
+    vyfilter = pre_vyfilter + dvy * accel_scale;
+  }
+
+  // total xy velocity magnitude cap
+  float v_mag = std::sqrt(vxfilter * vxfilter + vyfilter * vyfilter);
+  if (v_mag > max_v_mag) {
+    float v_scale = max_v_mag / v_mag;
+    vxfilter *= v_scale;
+    vyfilter *= v_scale;
+  }
+
+  pre_vxfilter = vxfilter;
+  pre_vyfilter = vyfilter;
+  pre_omegafilter = omegafilter;
+
+  // Inverse kinematics: (x, y, twist) -> each wheel's speed along its drive direction.
+  raw_w1 = -vxfilter * std::cos(alpha1) + vyfilter * std::sin(alpha1) - R * omegafilter;
+  raw_w2 = -vxfilter * std::cos(alpha2) + vyfilter * std::sin(alpha2) - R * omegafilter;
+  raw_w3 = -vxfilter * std::cos(alpha3) + vyfilter * std::sin(alpha3) - R * omegafilter;
+
+  // strafe blend factor
+  float totalV = std::fabs(vxfilter) + std::fabs(vyfilter);
+  float blend = 0.0;
+  if (totalV > 0.01) {
+    blend = std::fabs(vxfilter) / totalV;
+    blend = std::pow(blend, 1.8);
+  }
+
+  // per-wheel direction-specific compensation
+  float comp_w1_strafe;
+  if (vxfilter < 0)
+    comp_w1_strafe = COMP_W1_STRAFE_RIGHT;
+  else
+    comp_w1_strafe = COMP_W1_STRAFE_LEFT;
+  float comp_w1 = COMP_W1_FWD + blend * (comp_w1_strafe - COMP_W1_FWD);
+
+  float comp_w2_strafe;
+  float comp_w3_strafe;
+  if (vxfilter < 0) {
+    comp_w2_strafe = COMP_W2_STRAFE_RIGHT;
+    comp_w3_strafe = COMP_W3_STRAFE_RIGHT;
+  } else {
+    comp_w2_strafe = COMP_W2_STRAFE_LEFT;
+    comp_w3_strafe = COMP_W3_STRAFE_LEFT;
+  }
+
+  float base_w2 = chooseComp(COMP_W2_POS, COMP_W2_NEG, raw_w2);
+  float comp_w2 = base_w2 + blend * (comp_w2_strafe - base_w2);
+
+  float base_w3 = chooseComp(COMP_W3_POS, COMP_W3_NEG, raw_w3);
+  float comp_w3 = base_w3 + blend * (comp_w3_strafe - base_w3);
+
+  wheel1 = raw_w1 * comp_w1;
+  wheel2 = raw_w2 * comp_w2;
+  wheel3 = raw_w3 * comp_w3;
+
+  // wheel-level accel limiting
+  float w1_accel = max_accel * (1.0 + blend * 0.8);
+  float w1_decel = max_decel * (1.0 + blend * 3.0);
+  wheel1 = limitAcceleration(prevWheel1, wheel1, w1_accel, w1_decel);
+  wheel2 = limitAcceleration(prevWheel2, wheel2, max_accel, max_decel);
+  wheel3 = limitAcceleration(prevWheel3, wheel3, max_accel, max_decel);
+  prevWheel1 = wheel1;
+  prevWheel2 = wheel2;
+  prevWheel3 = wheel3;
+
+  // normalize so no wheel clips
+  float maxWheel = std::max(std::max(std::fabs(wheel1), std::fabs(wheel2)), std::fabs(wheel3));
+  if (maxWheel > 1.0) {
+    wheel1 /= maxWheel;
+    wheel2 /= maxWheel;
+    wheel3 /= maxWheel;
+  }
+
+  // per-wheel deadband
+  wheel1 = applyDeadband(wheel1, W1_MIN_DUTY);
+  wheel2 = applyDeadband(wheel2, W2_MIN_DUTY);
+  wheel3 = applyDeadband(wheel3, W3_MIN_DUTY);
+
+  set_targets(wheel1, wheel2, wheel3);
 }
